@@ -78,6 +78,7 @@ static struct {
 
     XrPosef quadPose;
     int recenterPending;
+    int hasPico;
     float dist, width, height_offset;
 
     /* frame */
@@ -383,6 +384,20 @@ static int init_actions(void)
     sb.countSuggestedBindings = sizeof b / sizeof b[0];
     XRCHK(xrSuggestInteractionProfileBindings(q.instance, &sb));
 
+    /* PICO (XR_BD_controller_interaction): same buttons, same paths. Not fatal. */
+    if (q.hasPico) {
+        static const char *pico_profiles[] = {
+            "/interaction_profiles/bytedance/pico4_controller",
+            "/interaction_profiles/bytedance/pico4s_controller",
+            "/interaction_profiles/bytedance/pico_neo3_controller",
+        };
+        for (int i = 0; i < 3; i++) {
+            sb.interactionProfile = path(pico_profiles[i]);
+            XrResult pr = xrSuggestInteractionProfileBindings(q.instance, &sb);
+            LOGI("PICO bindings %s: %s", pico_profiles[i], XR_SUCCEEDED(pr) ? "ok" : "not supported");
+        }
+    }
+
     XrSessionActionSetsAttachInfo ai = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
     ai.countActionSets = 1;
     ai.actionSets = &q.set;
@@ -460,6 +475,8 @@ static int xr_init(void)
     exts[ne++] = XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME;
     int perf = has_ext(props, n, XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
     if (perf) exts[ne++] = XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME;
+    q.hasPico = has_ext(props, n, "XR_BD_controller_interaction");
+    if (q.hasPico) exts[ne++] = "XR_BD_controller_interaction";
     free(props);
 
     XrInstanceCreateInfoAndroidKHR aci = {XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
@@ -467,7 +484,7 @@ static int xr_init(void)
     aci.applicationActivity = actRef;
     XrInstanceCreateInfo ici = {XR_TYPE_INSTANCE_CREATE_INFO};
     ici.next = &aci;
-    strcpy(ici.applicationInfo.applicationName, "RVGL Quest");
+    strcpy(ici.applicationInfo.applicationName, "RVGL VR");
     ici.applicationInfo.applicationVersion = 1;
     strcpy(ici.applicationInfo.engineName, "RVGL");
     ici.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 34);
@@ -478,6 +495,12 @@ static int xr_init(void)
         ici.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
         XRCHK(xrCreateInstance(&ici, &q.instance));
     }
+
+    XrInstanceProperties ip = {XR_TYPE_INSTANCE_PROPERTIES};
+    if (XR_SUCCEEDED(xrGetInstanceProperties(q.instance, &ip)))
+        LOGI("OpenXR runtime: %s %u.%u.%u%s", ip.runtimeName, XR_VERSION_MAJOR(ip.runtimeVersion),
+             XR_VERSION_MINOR(ip.runtimeVersion), XR_VERSION_PATCH(ip.runtimeVersion),
+             q.hasPico ? " (PICO controllers)" : "");
 
     XrSystemGetInfo sgi = {XR_TYPE_SYSTEM_GET_INFO};
     sgi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
@@ -875,6 +898,7 @@ int QXR_IgnoreAndroidJoystick(const char *name, int vendor_id)
 {
     if (vendor_id == 0x2833) return 1;
     if (name && (strstr(name, "Oculus") || strstr(name, "Quest") || strstr(name, "Meta "))) return 1;
+    if (name && (strstr(name, "PICO") || strstr(name, "Pico") || strstr(name, "pico"))) return 1;
     /* the headset accelerometer would take controller slot 0 (player 1) */
     if (name && strstr(name, "Accelerometer")) return 1;
     return 0;
