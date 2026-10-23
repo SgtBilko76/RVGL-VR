@@ -750,13 +750,16 @@ static void update_menu_keys(float lx, float ly, int bA, int bB, int bMenu)
     /* No key copies while a text field is active (Create Profile name wheel): the engine
      * reads Return/Escape there as "name finished"/"cancel", so A would add one letter and
      * jump to the next menu. The wheel works with the pad alone. */
-    int on = menu_mode() && !SDL_IsTextInputActive();
+    int on = menu_mode();
+    int text = SDL_IsTextInputActive();
+    /* arrows always in menus (they turn the name wheel); Return/Escape not while a text
+     * field is active, there A/B on the pad pick a letter / delete one */
     menu_key(MK_LEFT, on && stick_dir(MK_LEFT, lx, -1.0f));
     menu_key(MK_RIGHT, on && stick_dir(MK_RIGHT, lx, 1.0f));
     menu_key(MK_UP, on && stick_dir(MK_UP, ly, 1.0f));
     menu_key(MK_DOWN, on && stick_dir(MK_DOWN, ly, -1.0f));
-    menu_key(MK_RETURN, on && bA);
-    menu_key(MK_ESCAPE, on && (bB || bMenu));
+    menu_key(MK_RETURN, on && !text && bA);
+    menu_key(MK_ESCAPE, on && !text && (bB || bMenu));
 }
 
 static Sint16 axis(float v)
