@@ -114,6 +114,14 @@ include("src/joystick/SDL_joystick.c", '#include "SDL_sysjoystick.h"\n',
 edit("src/joystick/SDL_joystick.c",
      "            status = 0;\n        }\n    }\n    return status;\n}\n",
      "            status = 0;\n        }\n    }\n    QXR_OnJoystickInit(); " + MARK + "\n    return status;\n}\n")
+# ---- no Android IME: it is invisible in an immersive VR app and steals the key focus
+include("src/video/android/SDL_androidkeyboard.c")
+edit("src/video/android/SDL_androidkeyboard.c",
+     "    SDL_VideoData *videodata = (SDL_VideoData *)_this->driverdata;\n    Android_JNI_ShowTextInput(&videodata->textRect);\n",
+     "    SDL_VideoData *videodata = (SDL_VideoData *)_this->driverdata;\n"
+     "    if (QXR_Enabled()) { " + MARK + "\n        return;\n    }\n"
+     "    Android_JNI_ShowTextInput(&videodata->textRect);\n")
+
 # ---- Android.mk: build the VR host into libSDL2.so, link EGL/GLES3 + OpenXR loader
 edit("Android.mk",
      "LOCAL_CFLAGS += -DGL_GLEXT_PROTOTYPES\n",

@@ -19,6 +19,7 @@
   3. This notice may not be removed or altered from any source distribution.
 */
 #include "../../SDL_internal.h"
+#include "rvgl_questxr.h" /* QUESTXR */
 
 #if SDL_VIDEO_DRIVER_ANDROID
 
@@ -364,6 +365,9 @@ void
 Android_StartTextInput(_THIS)
 {
     SDL_VideoData *videodata = (SDL_VideoData *)_this->driverdata;
+    if (QXR_Enabled()) { /* QUESTXR */
+        return;
+    }
     Android_JNI_ShowTextInput(&videodata->textRect);
 }
 

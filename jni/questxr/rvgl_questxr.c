@@ -1,5 +1,5 @@
 /*
- * RVGL Quest VR host (stage 1: big virtual screen).
+ * RVGL Quest VR host: virtual screen for menus, head-tracked stereo in races.
  *
  * Compiled into libSDL2.so. The closed RVGL engine gets every GL function via
  * SDL_GL_GetProcAddress and presents via SDL_GL_SwapWindow, so:
@@ -12,6 +12,7 @@
 #include "rvgl_questxr.h"
 
 #include <android/log.h>
+#include <dlfcn.h>
 #include <jni.h>
 #include <math.h>
 #include <stdio.h>
@@ -39,6 +40,11 @@
 
 #define MAX_IMAGES 8
 
+#ifndef GL_RENDERBUFFER_SAMPLES_EXT
+typedef void (GL_APIENTRYP PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
+typedef void (GL_APIENTRYP PFNGLFRAMEBUFFERTEXTURE2DMULTISAMPLEEXTPROC)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
+#endif
+
 enum { HAND_L = 0, HAND_R = 1 };
 
 /* virtual pad layout (matches the mapping string below) */
@@ -57,7 +63,7 @@ static struct {
     XrInstance instance;
     XrSystemId system;
     XrSession session;
-    XrSpace localSpace, viewSpace;
+    XrSpace localSpace, viewSpace, appSpace; /* appSpace: recentred head yaw + position */
     XrSessionState state;
     int running;
 
@@ -68,11 +74,34 @@ static struct {
     int64_t format;
     int srgbWriteControl;
 
-    GLuint fbo, colorRb, depthRb;
+    GLuint fbo, mainFbo, colorRb, depthRb; /* fbo = what the engine's framebuffer 0 means right now */
 
     XrPosef quadPose;
     int recenterPending;
     float dist, width, height_offset;
+
+    /* frame */
+    XrFrameState fs;
+    int frameBegun;
+    XrView views[2];
+    int viewsValid;
+
+    /* stereo (races) */
+    int stereoCfg, horizonLock, msaa;
+    float worldScale, hudDist, hudWidth, hudHeight, eyeScale;
+    int eyesReady, eyeW, eyeH;
+    float tanX, tanY;
+    XrSwapchain eyeSwap[2];
+    uint32_t eyeImgCount[2];
+    XrSwapchainImageOpenGLESKHR eyeImgs[2][MAX_IMAGES];
+    GLuint eyeImgFbo[2][MAX_IMAGES], eyeDepth[2];
+    int eyeAcquired[2];
+    uint32_t eyeIdx[2];
+    int st;              /* ST_* below */
+    float savedMat[9], savedPos[3], savedProjH;
+    char *clone;
+    float lastFwd[2];
+    int statStereo, statFlat;
 
     XrActionSet set;
     XrAction aTrig, aGrip, aStickX, aStickY, aClick, aA, aB, aX, aY, aMenu;
@@ -95,6 +124,14 @@ static void load_config(void)
     q.dist = 3.0f;          /* metres */
     q.width = 3.4f;         /* metres; keeps ~59 deg arc at 3 m */
     q.height_offset = 0.0f; /* metres relative to eye height */
+    q.stereoCfg = 1;
+    q.worldScale = 30.0f;   /* game units per metre: car ~120 units = 4 m "driver" scale */
+    q.horizonLock = 1;
+    q.hudDist = 2.5f;
+    q.hudWidth = 2.6f;
+    q.hudHeight = 0.0f;
+    q.eyeScale = 1.0f;
+    q.msaa = 4;
     FILE *f = fopen("/sdcard/RVGL/quest_vr.cfg", "r");
     if (!f) return;
     char line[256];
@@ -103,6 +140,14 @@ static void load_config(void)
         if (sscanf(line, "screen_distance=%f", &v) == 1 && v > 0.5f) q.dist = v;
         else if (sscanf(line, "screen_width=%f", &v) == 1 && v > 0.3f) q.width = v;
         else if (sscanf(line, "screen_height_offset=%f", &v) == 1) q.height_offset = v;
+        else if (sscanf(line, "stereo=%f", &v) == 1) q.stereoCfg = v != 0.0f;
+        else if (sscanf(line, "world_scale=%f", &v) == 1 && v > 0.1f) q.worldScale = v;
+        else if (sscanf(line, "horizon_lock=%f", &v) == 1) q.horizonLock = v != 0.0f;
+        else if (sscanf(line, "hud_distance=%f", &v) == 1 && v > 0.3f) q.hudDist = v;
+        else if (sscanf(line, "hud_width=%f", &v) == 1 && v > 0.2f) q.hudWidth = v;
+        else if (sscanf(line, "hud_height_offset=%f", &v) == 1) q.hudHeight = v;
+        else if (sscanf(line, "eye_scale=%f", &v) == 1 && v > 0.3f && v <= 1.5f) q.eyeScale = v;
+        else if (sscanf(line, "msaa=%f", &v) == 1) q.msaa = (int)v;
     }
     fclose(f);
 }
@@ -182,6 +227,48 @@ static void GL_APIENTRY w_DrawBuffers(GLsizei n, const GLenum *bufs)
     real_DrawBuffers(n, bufs);
 }
 
+/* ---- stereo state machine, driven from glViewport (called inside the
+ * engine's SetViewport, after it filled render_settings and before
+ * SetCameraView builds the view). */
+enum { ST_NONE, ST_EYE0, ST_EYE1, ST_HUD };
+static void stereo_on_viewport(void);
+static void (GL_APIENTRYP real_Viewport)(GLint, GLint, GLsizei, GLsizei);
+static void (GL_APIENTRYP real_Scissor)(GLint, GLint, GLsizei, GLsizei);
+static void frame_begin(void);
+
+static void scale_rect(GLint *x, GLint *y, GLsizei *w, GLsizei *h)
+{
+    if (q.st != ST_EYE0 && q.st != ST_EYE1) return;
+    float sx = (float)q.eyeW / (float)QXR_GAME_W, sy = (float)q.eyeH / (float)QXR_GAME_H;
+    GLint x1 = (GLint)lroundf((float)(*x + *w) * sx), y1 = (GLint)lroundf((float)(*y + *h) * sy);
+    *x = (GLint)lroundf((float)*x * sx);
+    *y = (GLint)lroundf((float)*y * sy);
+    *w = x1 - *x;
+    *h = y1 - *y;
+}
+
+static void GL_APIENTRY w_Viewport(GLint x, GLint y, GLsizei w, GLsizei h)
+{
+    if (q.inited) {
+        frame_begin();
+        stereo_on_viewport();
+    }
+    scale_rect(&x, &y, &w, &h);
+    real_Viewport(x, y, w, h);
+}
+
+static void GL_APIENTRY w_Scissor(GLint x, GLint y, GLsizei w, GLsizei h)
+{
+    scale_rect(&x, &y, &w, &h);
+    real_Scissor(x, y, w, h);
+}
+
+/* keep destination alpha as premultiplied coverage, so the HUD layer composites correctly */
+static void GL_APIENTRY w_BlendFunc(GLenum sf, GLenum df)
+{
+    glBlendFuncSeparate(sf, df, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+}
+
 int QXR_Enabled(void) { return 1; }
 
 void *QXR_WrapProc(const char *name, void *real)
@@ -200,6 +287,12 @@ void *QXR_WrapProc(const char *name, void *real)
     WRAP("glDiscardFramebufferEXT", real_DiscardFramebufferEXT, w_DiscardFramebufferEXT);
     WRAP("glReadBuffer", real_ReadBuffer, w_ReadBuffer);
     WRAP("glDrawBuffers", real_DrawBuffers, w_DrawBuffers);
+    WRAP("glViewport", real_Viewport, w_Viewport);
+    WRAP("glScissor", real_Scissor, w_Scissor);
+    if (strcmp(name, "glBlendFunc") == 0) {
+        LOGI("wrapped %s", name);
+        return (void *)w_BlendFunc;
+    }
 #undef WRAP
     return real;
 }
@@ -328,6 +421,7 @@ static int create_offscreen_fbo(void)
     glViewport(0, 0, QXR_GAME_W, QXR_GAME_H);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    q.mainFbo = fbo;
     q.fbo = fbo; /* stays bound: the engine believes framebuffer 0 is current */
     LOGI("offscreen FBO %u (%dx%d)", fbo, QXR_GAME_W, QXR_GAME_H);
     return 1;
@@ -475,7 +569,9 @@ static int xr_init(void)
 
     load_config();
     q.quadPose.orientation.w = 1.0f;
+    q.quadPose.position.y = q.height_offset;
     q.quadPose.position.z = -q.dist;
+    q.appSpace = q.localSpace;
     q.recenterPending = 1;
 
     LOGI("OpenXR ready: %u swapchain images, screen %.2f m wide at %.2f m", q.imgCount, q.width, q.dist);
@@ -590,7 +686,7 @@ static void open_pad(void)
 /* ---- scripted input self-test: /sdcard/RVGL/quest_selftest.txt
  * lines "<ms after first frame> <A|B|X|Y|START|LEFT|RIGHT|UP|DOWN|RT|LT> <duration ms>" */
 #define MAX_STEPS 64
-static struct { Uint32 t, dur; char key[8]; } st_steps[MAX_STEPS];
+static struct { Uint32 t, dur; char key[16]; } st_steps[MAX_STEPS];
 static int st_count = -1;
 static Uint32 st_t0;
 
@@ -602,8 +698,8 @@ static void selftest_load(void)
     char line[128];
     while (st_count < MAX_STEPS && fgets(line, sizeof line, f)) {
         unsigned t, d;
-        char k[8];
-        if (sscanf(line, "%u %7s %u", &t, k, &d) == 3) {
+        char k[16];
+        if (sscanf(line, "%u %15s %u", &t, k, &d) == 3) {
             st_steps[st_count].t = t;
             st_steps[st_count].dur = d;
             strcpy(st_steps[st_count].key, k);
@@ -622,6 +718,42 @@ static int selftest_held(const char *key)
         if (strcmp(st_steps[i].key, key) == 0 && now >= st_steps[i].t && now < st_steps[i].t + st_steps[i].dur)
             return 1;
     return 0;
+}
+
+/* ---- menu keys: some RVGL screens (Create Profile on a fresh install) only read the
+ * keyboard, so outside races the Touch controls also drive arrows/Return/Escape. */
+extern int SDL_SendKeyboardKey(Uint8 state, SDL_Scancode scancode);
+extern int SDL_SendKeyboardText(const char *text);
+static int menu_mode(void);
+enum { MK_UP, MK_DOWN, MK_LEFT, MK_RIGHT, MK_RETURN, MK_ESCAPE, MK_COUNT };
+static const SDL_Scancode kMenuScan[MK_COUNT] = {SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT,
+                                                 SDL_SCANCODE_RIGHT, SDL_SCANCODE_RETURN, SDL_SCANCODE_ESCAPE};
+static int s_menuKey[MK_COUNT];
+
+static void menu_key(int k, int want)
+{
+    if (want == s_menuKey[k]) return;
+    s_menuKey[k] = want;
+    int r = SDL_SendKeyboardKey(want ? SDL_PRESSED : SDL_RELEASED, kMenuScan[k]);
+    (void)r;
+}
+
+static int stick_dir(int k, float v, float sign)
+{
+    /* hysteresis: press beyond 0.6, release under 0.35 */
+    float x = v * sign;
+    return s_menuKey[k] ? x > 0.35f : x > 0.6f;
+}
+
+static void update_menu_keys(float lx, float ly, int bA, int bB, int bMenu)
+{
+    int on = menu_mode();
+    menu_key(MK_LEFT, on && stick_dir(MK_LEFT, lx, -1.0f));
+    menu_key(MK_RIGHT, on && stick_dir(MK_RIGHT, lx, 1.0f));
+    menu_key(MK_UP, on && stick_dir(MK_UP, ly, 1.0f));
+    menu_key(MK_DOWN, on && stick_dir(MK_DOWN, ly, -1.0f));
+    menu_key(MK_RETURN, on && bA);
+    menu_key(MK_ESCAPE, on && (bB || bMenu));
 }
 
 static Sint16 axis(float v)
@@ -688,6 +820,31 @@ static void update_input(void)
         if (selftest_held("LT")) lt = 1.0f;
     }
 
+    update_menu_keys(lx, ly, bA, bB, bMenu);
+    if (st_count > 0) {
+        /* "SC<scancode>" steps hold a keyboard key (headless tests of text fields) */
+        static Uint8 held[SDL_NUM_SCANCODES];
+        static Uint8 sent[MAX_STEPS];
+        for (int i = 0; i < st_count; i++) {
+            /* "TX<text>" steps send SDL text input once */
+            if (strncmp(st_steps[i].key, "TX", 2) == 0 && !sent[i] && SDL_GetTicks() - st_t0 >= st_steps[i].t) {
+                sent[i] = 1;
+                SDL_SendKeyboardText(st_steps[i].key + 2);
+                LOGI("selftest: text '%s'", st_steps[i].key + 2);
+            }
+        }
+        for (int i = 0; i < st_count; i++) {
+            int sc = 0;
+            if (sscanf(st_steps[i].key, "SC%d", &sc) != 1 || sc <= 0 || sc >= SDL_NUM_SCANCODES) continue;
+            Uint32 now = SDL_GetTicks() - st_t0;
+            int want = now >= st_steps[i].t && now < st_steps[i].t + st_steps[i].dur;
+            if (want != held[sc]) {
+                held[sc] = (Uint8)want;
+                SDL_SendKeyboardKey(want ? SDL_PRESSED : SDL_RELEASED, (SDL_Scancode)sc);
+            }
+        }
+    }
+
     if (!q.pad) return;
     SDL_JoystickSetVirtualAxis(q.pad, VA_LX, axis(lx));
     SDL_JoystickSetVirtualAxis(q.pad, VA_LY, axis(-ly));
@@ -706,115 +863,7 @@ static void update_input(void)
     SDL_JoystickSetVirtualButton(q.pad, VB_RSHOULDER, q.gripDown[HAND_R]);
 }
 
-/* ----------------------------------------------------------------- present */
-
-static void place_screen(XrTime t)
-{
-    XrSpaceLocation loc = {XR_TYPE_SPACE_LOCATION};
-    if (XR_FAILED(xrLocateSpace(q.viewSpace, q.localSpace, t, &loc))) return;
-    const XrSpaceLocationFlags need = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
-    if ((loc.locationFlags & need) != need) return;
-    XrQuaternionf o = loc.pose.orientation;
-    /* head forward = rotate (0,0,-1) by o */
-    float fx = -2.0f * (o.x * o.z + o.w * o.y);
-    float fz = -(1.0f - 2.0f * (o.x * o.x + o.y * o.y));
-    float yaw = atan2f(-fx, -fz);
-    q.quadPose.orientation.x = 0.0f;
-    q.quadPose.orientation.y = sinf(yaw * 0.5f);
-    q.quadPose.orientation.z = 0.0f;
-    q.quadPose.orientation.w = cosf(yaw * 0.5f);
-    q.quadPose.position.x = loc.pose.position.x - sinf(yaw) * q.dist;
-    q.quadPose.position.y = loc.pose.position.y + q.height_offset;
-    q.quadPose.position.z = loc.pose.position.z - cosf(yaw) * q.dist;
-    q.recenterPending = 0;
-    LOGI("screen placed: yaw %.1f deg, pos %.2f %.2f %.2f", yaw * 57.2958f,
-         q.quadPose.position.x, q.quadPose.position.y, q.quadPose.position.z);
-}
-
-static int copy_frame(void)
-{
-    uint32_t idx = 0;
-    XrSwapchainImageAcquireInfo ai = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-    if (XR_FAILED(xrAcquireSwapchainImage(q.swapchain, &ai, &idx))) return 0;
-    XrSwapchainImageWaitInfo wi = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-    wi.timeout = XR_INFINITE_DURATION;
-    xrWaitSwapchainImage(q.swapchain, &wi);
-
-    GLint draw = 0, read = 0;
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
-    GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
-    GLboolean srgb = q.srgbWriteControl ? glIsEnabled(GL_FRAMEBUFFER_SRGB_EXT) : GL_FALSE;
-    if (scissor) glDisable(GL_SCISSOR_TEST);
-    if (q.srgbWriteControl) glDisable(GL_FRAMEBUFFER_SRGB_EXT);
-
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, q.fbo);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, q.imgFbo[idx]);
-    glBlitFramebuffer(0, 0, QXR_GAME_W, QXR_GAME_H, 0, 0, QXR_GAME_W, QXR_GAME_H, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)read);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)draw);
-    if (scissor) glEnable(GL_SCISSOR_TEST);
-    if (srgb) glEnable(GL_FRAMEBUFFER_SRGB_EXT);
-
-    XrSwapchainImageReleaseInfo ri = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-    xrReleaseSwapchainImage(q.swapchain, &ri);
-    return 1;
-}
-
-int QXR_Present(void)
-{
-    if (!q.inited) return 0;
-    poll_events();
-    if (!q.running) {
-        SDL_Delay(10);
-        return 1;
-    }
-
-    XrFrameState fs = {XR_TYPE_FRAME_STATE};
-    XrFrameWaitInfo fwi = {XR_TYPE_FRAME_WAIT_INFO};
-    if (XR_FAILED(xrWaitFrame(q.session, &fwi, &fs))) return 1;
-    XrFrameBeginInfo fbi = {XR_TYPE_FRAME_BEGIN_INFO};
-    if (XR_FAILED(xrBeginFrame(q.session, &fbi))) return 1;
-
-    update_input();
-    if (q.recenterPending) place_screen(fs.predictedDisplayTime);
-
-    XrCompositionLayerQuad quad = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-    const XrCompositionLayerBaseHeader *layers[1];
-    uint32_t nl = 0;
-    if (fs.shouldRender && copy_frame()) {
-        quad.space = q.localSpace;
-        quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-        quad.subImage.swapchain = q.swapchain;
-        quad.subImage.imageRect.offset.x = 0;
-        quad.subImage.imageRect.offset.y = 0;
-        quad.subImage.imageRect.extent.width = QXR_GAME_W;
-        quad.subImage.imageRect.extent.height = QXR_GAME_H;
-        quad.pose = q.quadPose;
-        quad.size.width = q.width;
-        quad.size.height = q.width * (float)QXR_GAME_H / (float)QXR_GAME_W;
-        layers[nl++] = (const XrCompositionLayerBaseHeader *)&quad;
-    }
-
-    XrFrameEndInfo fei = {XR_TYPE_FRAME_END_INFO};
-    fei.displayTime = fs.predictedDisplayTime;
-    fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    fei.layerCount = nl;
-    fei.layers = layers;
-    XrResult r = xrEndFrame(q.session, &fei);
-    if (XR_FAILED(r)) LOGE("xrEndFrame: %d", (int)r);
-
-    q.statFrames++;
-    Uint32 now = SDL_GetTicks();
-    if (!q.statT0) q.statT0 = now;
-    if (now - q.statT0 >= 5000) {
-        LOGI("perf: %.1f fps presented (state %d)", q.statFrames * 1000.0f / (float)(now - q.statT0), (int)q.state);
-        q.statT0 = now;
-        q.statFrames = 0;
-    }
-    return 1;
-}
+#include "rvgl_stereo.inc.c"
 
 int QXR_IgnoreAndroidJoystick(const char *name, int vendor_id)
 {
