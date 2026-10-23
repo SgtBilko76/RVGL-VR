@@ -396,22 +396,8 @@ static void hud_begin(void)
     if (sc) glEnable(GL_SCISSOR_TEST);
 }
 
-static Uint32 s_diagT;
-static void stereo_diag(void)
-{
-    Uint32 now = SDL_GetTicks();
-    if (now - s_diagT < 5000) return;
-    s_diagT = now;
-    engine_resolve();
-    LOGI("stereo diag: cfg %d eyes %d views %d ok %d loop %p (game %p) main %p vp %p (main vp %p) st %d clone %p",
-         q.stereoCfg, q.eyesReady, q.viewsValid, E.ok, E.ok ? *E.evtLoop : NULL, E.gameLoop,
-         E.ok ? (void *)*E.mainCam : NULL, E.ok ? (void *)*E.curVp : NULL,
-         (E.ok && *E.mainCam) ? (void *)(*E.mainCam + CAM_VP) : NULL, q.st, (void *)q.clone);
-}
-
 static void stereo_on_viewport(void)
 {
-    stereo_diag();
     if (q.st == ST_HUD) return;
     if (q.st == ST_NONE && !in_race()) return;
     char *main = *E.mainCam;
@@ -621,7 +607,7 @@ int QXR_Present(void)
     q.statFrames++;
     Uint32 now = SDL_GetTicks();
     if (!q.statT0) q.statT0 = now;
-    if (now - q.statT0 >= 5000) {
+    if (now - q.statT0 >= 60000) {
         LOGI("perf: %.1f fps presented (stereo %d, flat %d, state %d)",
              q.statFrames * 1000.0f / (float)(now - q.statT0), q.statStereo, q.statFlat, (int)q.state);
         q.statT0 = now;

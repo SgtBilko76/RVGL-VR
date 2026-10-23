@@ -1,11 +1,7 @@
 package com.bilko.rvglvr;
 
 import android.content.Intent;
-import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
-import android.provider.Settings;
 import android.util.Log;
 
 import org.libsdl.app.SDLActivity;
@@ -17,20 +13,21 @@ import org.libsdl.app.SDLActivity;
 public class RVGLVRActivity extends SDLActivity {
     private static final String TAG = "RVGLQuest";
 
+    private boolean toSetup;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        // RVGL keeps its data in /sdcard/RVGL: needs all-files access on Android 11+.
-        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
-            Log.i(TAG, "requesting all-files access");
-            try {
-                Intent i = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                        Uri.parse("package:" + getPackageName()));
-                startActivity(i);
-            } catch (Exception e) {
-                Log.e(TAG, "cannot open all-files access settings", e);
-            }
-        }
+        // Missing file access or game data: hand over to the 2D setup panel (own process),
+        // which downloads the data and starts this activity again when done.
+        toSetup = !SetupActivity.dataReady();
         super.onCreate(savedInstanceState);
+        if (toSetup) {
+            Log.i(TAG, "game data missing, starting setup");
+            Intent i = new Intent(this, SetupActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+            finish();
+        }
     }
 
     @Override
@@ -49,6 +46,11 @@ public class RVGLVRActivity extends SDLActivity {
 
     @Override
     protected void onDestroy() {
+        if (toSetup) {
+            super.onDestroy();
+            android.os.Process.killProcess(android.os.Process.myPid());
+            return;
+        }
         // SDL joins its thread without a timeout; make sure the process really ends.
         Thread watchdog = new Thread(() -> {
             try { Thread.sleep(3000); } catch (InterruptedException ignored) { }

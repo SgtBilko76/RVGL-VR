@@ -57,5 +57,16 @@
                 <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
             </intent-filter>
         </activity>
+        <!-- first-launch download panel: plain 2D, own task and process -->
+        <activity
+            android:name="com.bilko.rvglvr.SetupActivity"
+            android:label="RVGL VR setup"
+            android:process=":setup"
+            android:taskAffinity="com.bilko.rvglvr.setup"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.DeviceDefault"
+            android:exported="false">
+            <layout android:defaultWidth="1100dp" android:defaultHeight="760dp" />
+        </activity>
     </application>
 </manifest>

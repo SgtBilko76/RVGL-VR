@@ -9,3 +9,6 @@ data-game_files/
 data-ost/
 stage/
 backup/
+addons/
+__pycache__/
+*.pyc
