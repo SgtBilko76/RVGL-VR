@@ -431,10 +431,10 @@ static int xr_init(void)
     const char *glext = (const char *)glGetString(GL_EXTENSIONS);
     q.srgbWriteControl = glext && strstr(glext, "GL_EXT_sRGB_write_control") != NULL;
     uint32_t nf = 0;
-    xrEnumerateSwapchainFormats(q.session, 0, &nf, NULL);
-    int64_t fmts[64];
-    if (nf > 64) nf = 64;
-    xrEnumerateSwapchainFormats(q.session, nf, &nf, fmts);
+    XRCHK(xrEnumerateSwapchainFormats(q.session, 0, &nf, NULL));
+    int64_t *fmts = calloc(nf ? nf : 1, sizeof *fmts);
+    XRCHK(xrEnumerateSwapchainFormats(q.session, nf, &nf, fmts));
+    LOGI("%u swapchain formats", nf);
     q.format = 0;
     for (uint32_t i = 0; i < nf; i++) {
         if (q.srgbWriteControl && fmts[i] == GL_SRGB8_ALPHA8) { q.format = GL_SRGB8_ALPHA8; break; }
@@ -444,6 +444,7 @@ static int xr_init(void)
             if (fmts[i] == GL_RGBA8) { q.format = GL_RGBA8; break; }
     }
     if (!q.format && nf) q.format = fmts[0];
+    free(fmts);
     LOGI("swapchain format 0x%llx, sRGB write control %d", (long long)q.format, q.srgbWriteControl);
 
     XrSwapchainCreateInfo sc = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
@@ -586,6 +587,43 @@ static void open_pad(void)
     }
 }
 
+/* ---- scripted input self-test: /sdcard/RVGL/quest_selftest.txt
+ * lines "<ms after first frame> <A|B|X|Y|START|LEFT|RIGHT|UP|DOWN|RT|LT> <duration ms>" */
+#define MAX_STEPS 64
+static struct { Uint32 t, dur; char key[8]; } st_steps[MAX_STEPS];
+static int st_count = -1;
+static Uint32 st_t0;
+
+static void selftest_load(void)
+{
+    st_count = 0;
+    FILE *f = fopen("/sdcard/RVGL/quest_selftest.txt", "r");
+    if (!f) return;
+    char line[128];
+    while (st_count < MAX_STEPS && fgets(line, sizeof line, f)) {
+        unsigned t, d;
+        char k[8];
+        if (sscanf(line, "%u %7s %u", &t, k, &d) == 3) {
+            st_steps[st_count].t = t;
+            st_steps[st_count].dur = d;
+            strcpy(st_steps[st_count].key, k);
+            st_count++;
+        }
+    }
+    fclose(f);
+    st_t0 = SDL_GetTicks();
+    LOGI("selftest: %d steps", st_count);
+}
+
+static int selftest_held(const char *key)
+{
+    Uint32 now = SDL_GetTicks() - st_t0;
+    for (int i = 0; i < st_count; i++)
+        if (strcmp(st_steps[i].key, key) == 0 && now >= st_steps[i].t && now < st_steps[i].t + st_steps[i].dur)
+            return 1;
+    return 0;
+}
+
 static Sint16 axis(float v)
 {
     if (v > 1.0f) v = 1.0f;
@@ -636,6 +674,19 @@ static void update_input(void)
         q.bothClickFired = 0;
     }
     if (q.bothClickStart) cL = cR = 0; /* don't leak the combo into the game */
+
+    if (st_count < 0) selftest_load();
+    if (st_count > 0) {
+        bA |= selftest_held("A"); bB |= selftest_held("B");
+        bX |= selftest_held("X"); bY |= selftest_held("Y");
+        bMenu |= selftest_held("START");
+        if (selftest_held("LEFT")) lx = -1.0f;
+        if (selftest_held("RIGHT")) lx = 1.0f;
+        if (selftest_held("UP")) ly = 1.0f;
+        if (selftest_held("DOWN")) ly = -1.0f;
+        if (selftest_held("RT")) rt = 1.0f;
+        if (selftest_held("LT")) lt = 1.0f;
+    }
 
     if (!q.pad) return;
     SDL_JoystickSetVirtualAxis(q.pad, VA_LX, axis(lx));
@@ -769,5 +820,7 @@ int QXR_IgnoreAndroidJoystick(const char *name, int vendor_id)
 {
     if (vendor_id == 0x2833) return 1;
     if (name && (strstr(name, "Oculus") || strstr(name, "Quest") || strstr(name, "Meta "))) return 1;
+    /* the headset accelerometer would take controller slot 0 (player 1) */
+    if (name && strstr(name, "Accelerometer")) return 1;
     return 0;
 }
