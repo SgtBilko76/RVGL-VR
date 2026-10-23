@@ -76,35 +76,36 @@ static void ensure_player1_pad(void)
         if (!settings || !initJoystick) LOGE("controls: engine symbols missing");
     }
     if (!settings || !initJoystick || !q.pad) return;
-    /* player 1 controller block (17 ints, measured): [0] Joystick, [1] SteeringDeadzone,
-     * [2] SteeringRange, [3] ButtonOpacity, [4..14] keys Left Right Fwd Back Fire Reset
-     * Reposition Honka ChangeCamera RearView Pause, [15..16] ForceFeedback/NonLinear flags */
-    int *c = (int *)(settings + 0x2c0);
+    /* player 1 controller block, 17 ints at settings+0x28c (stride 0x44 per player), as
+     * CRD_UpdateControlsFromProfile reads it: [0..10] keys Left Right Fwd Back Fire Reset
+     * Reposition Honka ChangeCamera RearView Pause, [11..12] flags, [13] Joystick (0x2c0),
+     * [14] SteeringDeadzone, [15] SteeringRange, [16] ButtonOpacity */
+    int *c = (int *)(settings + 0x28c);
     static int dumped;
     if (!dumped) {
         dumped = 1;
-        LOGI("controls: p1 joy %d dz %d range %d opacity %d keys %08x %08x %08x %08x",
-             c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]);
+        LOGI("controls: p1 joy %d dz %d range %d opacity %d keys L %08x R %08x F %08x B %08x",
+             c[13], c[14], c[15], c[16], c[0], c[1], c[2], c[3]);
     }
     int changed = 0;
-    if (c[0] == -1) {
-        c[0] = 0;
+    if (c[13] == -1) {
+        c[13] = 0;
         changed = 1;
         LOGI("controls: player 1 had no controller, assigned Quest Touch");
     }
-    int sane = c[1] >= 0 && c[1] <= 100 && c[2] > 0 && c[2] <= 100 && c[3] >= 0 && c[3] <= 100;
+    int sane = c[14] >= 0 && c[14] <= 100 && c[15] > 0 && c[15] <= 100 && c[16] >= 0 && c[16] <= 100;
     /* Fwd still a keyboard key (< 0x01000000) or unbound (-1): no pad bindings yet */
-    if (c[0] == 0 && sane && ((unsigned)c[6] < 0x01000000u || c[6] == -1)) {
-        /* still keyboard bindings: RVGL's gamepad layout (left stick steers, RT/LT drive) */
+    if (c[13] == 0 && sane && ((unsigned)c[2] < 0x01000000u || c[2] == -1)) {
+        /* RVGL's gamepad layout: left stick steers, RT accelerates, LT brakes */
         static const int pad_keys[11] = {0x02000000, 0x03000000, 0x03ff0005, 0x03ff0004, 0x01000000,
                                          0x01000001, 0x01000002, 0x01ff0008, 0x01ff0003, 0x01ff000a,
                                          0x01ff0006};
-        memcpy(c + 4, pad_keys, sizeof pad_keys);
+        memcpy(c, pad_keys, sizeof pad_keys);
         changed = 1;
         LOGI("controls: player 1 bindings set to the Quest Touch gamepad layout");
     }
-    if (c[0] == 0 && sane && c[3] != 0) {
-        c[3] = 0; /* no Android touch-screen buttons in VR */
+    if (c[13] == 0 && sane && c[16] != 0) {
+        c[16] = 0; /* no Android touch-screen buttons in VR */
         LOGI("controls: touch buttons hidden");
     }
     if (changed) initJoystick(0);
