@@ -93,7 +93,8 @@ static void ensure_player1_pad(void)
         LOGI("controls: player 1 had no controller, assigned Quest Touch");
     }
     int sane = c[1] >= 0 && c[1] <= 100 && c[2] > 0 && c[2] <= 100 && c[3] >= 0 && c[3] <= 100;
-    if (c[0] == 0 && sane && (unsigned)c[6] < 0x01000000u) {
+    /* Fwd still a keyboard key (< 0x01000000) or unbound (-1): no pad bindings yet */
+    if (c[0] == 0 && sane && ((unsigned)c[6] < 0x01000000u || c[6] == -1)) {
         /* still keyboard bindings: RVGL's gamepad layout (left stick steers, RT/LT drive) */
         static const int pad_keys[11] = {0x02000000, 0x03000000, 0x03ff0005, 0x03ff0004, 0x01000000,
                                          0x01000001, 0x01000002, 0x01ff0008, 0x01ff0003, 0x01ff000a,
