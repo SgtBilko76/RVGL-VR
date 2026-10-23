@@ -1,0 +1,10 @@
+build/
+.gradle/
+.cxx/
+local.properties
+*.apk
+*.log
+rvgl-base/
+data-game_files/
+data-ost/
+stage/

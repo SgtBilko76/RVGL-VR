@@ -1,0 +1,78 @@
+plugins {
+    id 'com.android.application' version '8.2.0'
+}
+
+// RVGL's own assets (rvgl-base/distrib/assets) + assets_list.txt, which the
+// engine extracts to /sdcard/RVGL on first run. Game data is NOT bundled.
+def assetsOut = file("$buildDir/generated/rvglassets")
+tasks.register('prepareRvglAssets', Exec) {
+    inputs.dir 'rvgl-base/distrib/assets'
+    inputs.file 'tools/prepare_assets.py'
+    outputs.dir assetsOut
+    commandLine 'python3', 'tools/prepare_assets.py', assetsOut.path
+}
+
+android {
+    namespace 'com.bilko.rvglvr'
+    compileSdk 34
+    ndkVersion '25.1.8937393'
+
+    defaultConfig {
+        applicationId 'com.bilko.rvglvr'
+        minSdk 29
+        targetSdk 32
+        versionCode 1
+        versionName '0.1.0-stage1'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+            jniDebuggable true
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    externalNativeBuild {
+        ndkBuild {
+            path 'jni/Android.mk'
+        }
+    }
+    defaultConfig.externalNativeBuild {
+        ndkBuild {
+            arguments 'NDK_APPLICATION_MK=jni/Application.mk', '-j16'
+        }
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile 'src/main/AndroidManifest.xml'
+            java.srcDirs = ['src/main/java']
+            res.srcDirs = ['src/main/res']
+            // prebuilt RVGL engine + audio libs + OpenXR loader (not built by ndk-build)
+            jniLibs.srcDirs = ['src/main/jniLibs']
+            assets.srcDirs = [assetsOut]
+        }
+    }
+
+    packagingOptions {
+        jniLibs { useLegacyPackaging true }
+        // ndk-build also emits libopenxr_loader.so; keep one copy
+        pickFirst 'lib/arm64-v8a/libopenxr_loader.so'
+    }
+
+    aaptOptions {
+        noCompress 'ogg', 'wav', 'mp3', 'bmp'
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}
+
+preBuild.dependsOn prepareRvglAssets
