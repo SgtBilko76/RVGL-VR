@@ -113,7 +113,21 @@ static void ensure_player1_pad(void)
 static int menu_mode(void)
 {
     engine_resolve();
-    return !(E.ok && *E.evtLoop == E.gameLoop);
+    if (!(E.ok && *E.evtLoop == E.gameLoop)) return 1;
+    /* in a race: the pause/in-game menu is open when a player's menu header holds a menu */
+    static void **headers;
+    if (!headers) {
+        void *h = dlopen("libmain.so", RTLD_NOW | RTLD_NOLOAD);
+        if (h) headers = (void **)dlsym(h, "menu_headers");
+        if (!headers) return 0;
+    }
+    int open = headers[0] != NULL || headers[0x140 / sizeof(void *)] != NULL;
+    static int lastOpen = -1;
+    if (open != lastOpen) {
+        lastOpen = open;
+        LOGI("race menu %s", open ? "open" : "closed");
+    }
+    return open;
 }
 
 static int in_race(void)

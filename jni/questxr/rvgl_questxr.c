@@ -128,7 +128,7 @@ static void load_config(void)
     q.worldScale = 30.0f;   /* game units per metre: car ~120 units = 4 m "driver" scale */
     q.horizonLock = 1;
     q.hudDist = 2.5f;
-    q.hudWidth = 2.6f;
+    q.hudWidth = 3.6f;  /* ~72 deg wide at 2.5 m: corner displays sit further out */
     q.hudHeight = 0.0f;
     q.eyeScale = 1.0f;
     q.msaa = 4;
@@ -747,7 +747,10 @@ static int stick_dir(int k, float v, float sign)
 
 static void update_menu_keys(float lx, float ly, int bA, int bB, int bMenu)
 {
-    int on = menu_mode();
+    /* No key copies while a text field is active (Create Profile name wheel): the engine
+     * reads Return/Escape there as "name finished"/"cancel", so A would add one letter and
+     * jump to the next menu. The wheel works with the pad alone. */
+    int on = menu_mode() && !SDL_IsTextInputActive();
     menu_key(MK_LEFT, on && stick_dir(MK_LEFT, lx, -1.0f));
     menu_key(MK_RIGHT, on && stick_dir(MK_RIGHT, lx, 1.0f));
     menu_key(MK_UP, on && stick_dir(MK_UP, ly, 1.0f));
