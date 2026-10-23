@@ -1,17 +1,17 @@
 # RVGL-VR
 
-**Re-Volt (RVGL) for Meta Quest, standalone.** The official RVGL Android engine in
+**Re-Volt (RVGL) for Meta Quest and PICO, standalone.** The official RVGL Android engine in
 a native OpenXR host: menus on a big virtual screen, and races in head-tracked
 stereo 3D with the HUD on a floating panel. It plays with the Touch controllers.
 
 - Engine: [RVGL](https://rvgl.org) 23.1030a1, the official Android build (unmodified `libmain.so`)
 - VR host: a native OpenXR layer built into SDL2 (`jni/questxr`)
-- Tested on Meta Quest 3
+- Tested on Meta Quest 3. PICO 4 / 4 Ultra / Neo 3 use the same APK (untested; PICO OS 5.9.0 or newer)
 
 ## Install
 
 1. Install the APK from the [releases](https://github.com/SgtBilko76/RVGL-VR/releases)
-   with SideQuest, or run `adb install -r RVGL-VR-v0.1.0.apk`.
+   with SideQuest, or run `adb install -r RVGL-VR-v0.1.1.apk` (on PICO use adb).
 2. Start **RVGL VR** from *Library → Unknown Sources*.
 3. On the first start a setup panel opens:
    - **Allow file access** → switch it on → *Done*. RVGL keeps its data in `/sdcard/RVGL`.
@@ -25,7 +25,7 @@ Packs that are already there are not downloaded again.
 
 ## Controls
 
-| Touch controller | Race | Menus |
+| Controller (Quest Touch / PICO) | Race | Menus |
 |---|---|---|
 | Left stick | Steer | Move / turn the name wheel |
 | Right trigger | Accelerate | |
