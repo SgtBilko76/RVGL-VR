@@ -77,8 +77,8 @@ static void ensure_player1_pad(void)
     }
     if (!settings || !initJoystick || !q.pad) return;
     /* player 1 controller block, 17 ints at settings+0x28c (stride 0x44 per player), as
-     * CRD_UpdateControlsFromProfile reads it: [0..10] keys Left Right Fwd Back Fire Reset
-     * Reposition Honka ChangeCamera RearView Pause, [11..12] flags, [13] Joystick (0x2c0),
+     * CRD_UpdateControlsFromProfile reads it: [0..11] keys (order above pad_keys), [12] flags,
+     * [13] Joystick (0x2c0),
      * [14] SteeringDeadzone, [15] SteeringRange, [16] ButtonOpacity */
     int *c = (int *)(settings + 0x28c);
     static int dumped;
@@ -97,10 +97,13 @@ static void ensure_player1_pad(void)
     /* Fwd still a keyboard key (< 0x01000000) or unbound (-1): no pad bindings yet */
     if (c[13] == 0 && sane && ((unsigned)c[2] < 0x01000000u || c[2] == -1)) {
         /* RVGL's gamepad layout: left stick steers, RT accelerates, LT brakes */
-        static const int pad_keys[11] = {0x02000000, 0x03000000, 0x03ff0005, 0x03ff0004, 0x01000000,
-                                         0x01000001, 0x01000002, 0x01ff0008, 0x01ff0003, 0x01ff000a,
-                                         0x01ff0006};
-        memcpy(c, pad_keys, sizeof pad_keys);
+        /* memory order (CRD_SetDefaultControls): Left Right Fwd Back Fire Reset Reposition
+         * Honka RearView [9: unlisted key, left alone] ChangeCamera Pause */
+        static const int pad_keys[12] = {0x02000000, 0x03000000, 0x03ff0005, 0x03ff0004, 0x01000000,
+                                         0x01000001, 0x01000002, 0x01ff0008, 0x01ff000a, 0,
+                                         0x01ff0003, 0x01ff0006};
+        for (int k = 0; k < 12; k++)
+            if (k != 9) c[k] = pad_keys[k];
         changed = 1;
         LOGI("controls: player 1 bindings set to the Quest Touch gamepad layout");
     }
@@ -108,7 +111,18 @@ static void ensure_player1_pad(void)
         c[16] = 0; /* no Android touch-screen buttons in VR */
         LOGI("controls: touch buttons hidden");
     }
-    if (changed) initJoystick(0);
+    if (changed) {
+        initJoystick(0);
+        /* rebuild the engine's live binding table from settings, else the race keeps the
+         * keyboard keys until the next launch */
+        static void (*updateControls)(void);
+        if (!updateControls) {
+            void *h = dlopen("libmain.so", RTLD_NOW | RTLD_NOLOAD);
+            if (h) *(void **)&updateControls = dlsym(h, "_Z29CRD_UpdateControlsFromProfilev");
+        }
+        if (updateControls) updateControls();
+        else LOGE("controls: CRD_UpdateControlsFromProfile missing");
+    }
 }
 
 static int menu_mode(void)
