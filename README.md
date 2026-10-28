@@ -1,5 +1,7 @@
 # RVGL-VR
 
+**Download, install guide, controls and pictures: [portroyale.online/rvgl.html](https://portroyale.online/rvgl.html)**
+
 **Re-Volt (RVGL) for Meta Quest and PICO, standalone.** The official RVGL Android engine in
 a native OpenXR host: menus on a big virtual screen, and races in head-tracked
 stereo 3D with the HUD on a floating panel. It plays with the Touch controllers.
