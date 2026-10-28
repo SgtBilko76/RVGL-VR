@@ -25,6 +25,8 @@ Packs that are already there are not downloaded again.
 
 ## Controls
 
+![RVGL VR controller mapping](docs/controls.webp)
+
 | Controller (Quest Touch / PICO) | Race | Menus |
 |---|---|---|
 | Left stick | Steer | Move / turn the name wheel |
